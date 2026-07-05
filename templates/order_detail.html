@@ -383,7 +383,7 @@
     const chatBox = document.getElementById("chat-box");
 
     chatBox.classList.add("visible")
-  }
+  } 
 
   function appendMessage(text, type){
     const messages = document.getElementById("chat-messages");
@@ -402,6 +402,7 @@
   async function sendMessage(){
     const input = document.getElementById("chat-input");
     const message = input.value.trim();
+
 
     // don't send empty message
     if(!message) return;
@@ -423,7 +424,7 @@
         },
         body: JSON.stringify({message: message})
       });
-
+      //console.log("response==>",await response.json());
       const data = await response.json()
       hideTyping();
       appendMessage(data.reply, "agent");

@@ -1,6 +1,7 @@
 from anthropic import Anthropic
 from django.conf import settings
 from .tools import get_order_details,check_delivery_status,get_refund_history
+from .models import Conversation,Message,AgentLog
 
 
 #Initialize Anthropis Client
@@ -31,6 +32,28 @@ Important rules:
 - If refund decision is needed — tell customer you are checking with your team
 - Never use bold text, bullet points or any markdown formatting. Plain text only.
 - Keep replies concise and conversational. Maximum 3-4 sentences. No long paragraphs.
+"""
+
+MANAGER_SYSTEM_PROMPT = """
+You are a senior support manager at CoolBreeze AC.
+A support agent has escalated a customer case to you for a refund decision.
+
+Your responsibilities:
+- Review the case summary carefully
+- Consider the customer's refund history
+- Make a fair and final refund decision
+- Give a clear reason for your decision
+
+Your decision options:
+- Approve refund — if the case is genuine and within policy
+- Deny refund — if the case is suspicious or outside policy
+- Escalate to risk team — if you suspect fraud
+
+Important rules:
+- Be fair but firm
+- Base decision on facts — not emotions
+- Always give a specific reason for your decision
+- Keep your response concise and professional
 """
 
 #SUPPORT TOOLS --> tools schemas ,that ai agent will read
@@ -81,6 +104,20 @@ SUPPORT_TOOLS=[
             },
             "required": ["tracking_number", "carrier"]
         }
+    },
+    {
+        "name": "escalate_to_manager",
+        "description": "Escalate the case to manager for refund decision. Always include customer's user_id in the case summary so manager can assess fraud risk accurately.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "case_summary": {
+                    "type": "string",
+                    "description": "Complete case summary. Must include: customer user_id, order details, refund history and complaint. Format: Start with 'Customer User ID: X' on the first line."
+                }
+            },
+            "required": ["case_summary"]
+        }
     }
 ]
 
@@ -97,7 +134,96 @@ def execute_tool(tool_name,tool_input):
     
     if tool_name=="check_delivery_status":
         return check_delivery_status(tool_input["tracking_number"],tool_input['carrier'])
-
+    
+    if tool_name=='escalate_to_manager':
+        case_summary=tool_input["case_summary"]
+        print("Escalet to manager===>",case_summary)
+        decision=run_manager_agent(case_summary)
+        print("Decision===>",decision)
+        return decision
 
 
 #Agent Loop. --> while loop that runs until the task is done
+
+def run_support_agent(user_message,conversation_id,order_id,user_id):
+    conv=Conversation.objects.get(id=conversation_id)
+
+    conversation_messages=[]
+    for msg in conv.messages.order_by('created_at'):
+        conversation_messages.append({
+            "role":msg.role,
+            "content":msg.content
+        })
+
+    while True:
+        #send this conversation to LLM
+        response=client.messages.create(
+            model=anthropic_model,
+            max_tokens=1024,
+            system=SUPPORT_SYSTEM_PROMPT+ f"\n\nContext: This conversation is about Order #{order_id} ,user:{user_id}",
+            tools=SUPPORT_TOOLS,
+            messages=conversation_messages
+        )
+        if response.stop_reason=="tool_use":
+            tool_result=[]
+            for block in response.content:
+                if block.type=="tool_use":
+                    #execute the tool
+                    result=execute_tool(block.name,block.input)
+
+                    tool_result.append({
+                        "type":"tool_result",
+                        "tool_use_id":block.id,
+                        "content" :str(result)
+                    })
+
+            conversation_messages.append({
+                "role": "assistant",
+                "content": response.content
+            })
+
+            conversation_messages.append({
+                "role": "user",
+                "content": tool_result
+            })
+        else:
+            #return response.content[0].text
+            for block in response.content:
+                if block.type == "text":
+                    return block.text
+            return "No response generated."
+
+
+def run_manager_agent(case_summary):
+    manager_messages=[
+        {"role":"user","content":case_summary} #user is task giver here its maya
+    ]
+    while True:
+        response=client.messages.create(
+            model=anthropic_model,
+            max_tokens=1024,
+            system=MANAGER_SYSTEM_PROMPT,
+            messages=manager_messages
+        )
+        if response.stop_reason=="tool_use":
+            tool_result=[]
+            for block in response.content:
+                if block.type=="tool_use":
+                    #execute the tool
+                    result=execute_tool(block.name,block.input)
+
+                    tool_result.append({
+                        "type":"tool_result",
+                        "tool_use_id":block.id,
+                        "content" :str(result)
+                    })
+            manager_messages.append({
+                "role": "assistant",
+                "content": response.content
+            })
+            manager_messages.append({
+                "role": "user",
+                "content": tool_result
+            })
+        else:
+            return response.content[0].text

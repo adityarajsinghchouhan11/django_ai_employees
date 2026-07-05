@@ -14,7 +14,7 @@ def get_order_details(order_id):
             "tracking_number":order.tracking_number,
             "delivery_address":order.delivery,
             "ordered_on":order.created_at.strftime("%d %b %Y"),# 12 jan 2026
-            "days_since_order":(timezone()-order.created_at).days #5
+            "days_since_order": (timezone.now() - order.created_at).days #5
         }
     except Order.DoesNotExist:
         return {'error',f"Order #{order.id} not found."}
